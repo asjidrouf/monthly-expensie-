@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>FinVault — Personal Finance</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+// Enable cell styles in SheetJS
+if (typeof XLSX !== 'undefined') { try { XLSX.SSF = XLSX.SSF || {}; } catch(e) {} }
+</script>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -571,7 +575,7 @@
     <!-- DASHBOARD -->
     <div class="page active" id="page-dashboard">
       <div class="saving-box">
-        <div class="saving-label">Net Savings This Month</div>
+        <div class="saving-label">Total Savings This Month (Kept + Remaining)</div>
         <div class="saving-value" id="netSavings">PKR 0</div>
       </div>
       <div class="stats-grid">
@@ -1417,8 +1421,9 @@ function renderDashboard(entries) {
   const totalSaved = savings.reduce((s, e) => s + e.amount, 0);
   const homeTotal = expenses.filter(e => e.category === 'home').reduce((s, e) => s + e.amount, 0);
   const net = totalIncome - totalSpent - totalSaved;
+  const totalNetSavings = net + totalSaved;
 
-  document.getElementById('netSavings').textContent = fmt(net);
+  document.getElementById('netSavings').textContent = fmt(totalNetSavings);
   document.getElementById('totalIncome').textContent = fmt(totalIncome);
   document.getElementById('totalSpent').textContent = fmt(totalSpent);
   document.getElementById('totalHome').textContent = fmt(homeTotal);
@@ -1510,7 +1515,7 @@ function renderYearly() {
   }
   document.getElementById('yTotalSpent').textContent = fmt(ySpent);
   document.getElementById('yTotalIncome').textContent = fmt(yIncome);
-  document.getElementById('yNetSavings').textContent = fmt(yIncome - ySpent - ySaved);
+  document.getElementById('yNetSavings').textContent = fmt(yIncome - ySpent);
   document.getElementById('yTotalHome').textContent = fmt(yHome);
   document.getElementById('yearGrid').innerHTML = monthBlocks.map(({ m, val }) => {
     const isCurrent = m === currentMonth && currentYear === new Date().getFullYear();
@@ -1597,19 +1602,74 @@ function renderSavings() {
 }
 
 // ===== EXPORT =====
+function applyLuxuryStyles(ws, headerRow, dataRowCount, cols) {
+  // Gold header style
+  const headerStyle = {
+    font: { bold: true, color: { rgb: "0A0A0F" }, sz: 11, name: "Calibri" },
+    fill: { fgColor: { rgb: "C9A84C" }, patternType: "solid" },
+    alignment: { horizontal: "center", vertical: "center", wrapText: true },
+    border: {
+      top: { style: "thin", color: { rgb: "8B6914" } },
+      bottom: { style: "thin", color: { rgb: "8B6914" } },
+      left: { style: "thin", color: { rgb: "8B6914" } },
+      right: { style: "thin", color: { rgb: "8B6914" } }
+    }
+  };
+  // Apply header style to first row
+  cols.forEach((col, i) => {
+    const cellRef = XLSX.utils.encode_cell({ r: headerRow, c: i });
+    if (ws[cellRef]) ws[cellRef].s = headerStyle;
+  });
+  // Alternating row styles
+  for (let r = headerRow + 1; r <= headerRow + dataRowCount; r++) {
+    const isEven = (r - headerRow) % 2 === 0;
+    const rowBg = isEven ? "1A1A2E" : "12121A";
+    cols.forEach((col, c) => {
+      const cellRef = XLSX.utils.encode_cell({ r, c });
+      if (!ws[cellRef]) return;
+      const cellType = ws[cellRef].t;
+      const isAmount = cols[c] && (cols[c].toLowerCase().includes('amount') || cols[c].toLowerCase().includes('income') || cols[c].toLowerCase().includes('expense') || cols[c].toLowerCase().includes('saving') || cols[c].toLowerCase().includes('net') || cols[c].toLowerCase().includes('car') || cols[c].toLowerCase().includes('food') || cols[c].toLowerCase().includes('mobile') || cols[c].toLowerCase().includes('shopping'));
+      ws[cellRef].s = {
+        font: { color: { rgb: isAmount ? "C9A84C" : "E0DDD8" }, sz: 10, name: "Calibri" },
+        fill: { fgColor: { rgb: rowBg }, patternType: "solid" },
+        alignment: { horizontal: isAmount ? "right" : "left", vertical: "center" },
+        border: {
+          bottom: { style: "hair", color: { rgb: "2A2A3A" } },
+          right: { style: "hair", color: { rgb: "2A2A3A" } }
+        }
+      };
+      if (isAmount && cellType === 'n') {
+        ws[cellRef].z = '#,##0';
+      }
+    });
+  }
+  // Set row heights
+  if (!ws['!rows']) ws['!rows'] = [];
+  ws['!rows'][headerRow] = { hpt: 22 };
+}
+
 async function exportExcel() {
   const allEntries = _cachedEntries || await loadData();
   const medEntries = _cachedMed || await loadMedData();
   const wb = XLSX.utils.book_new();
-  const txnRows = [['Date','Month','Year','Type','Category','Description','Amount (PKR)']];
+
+  // ── Sheet 1: All Transactions ──
+  const txnHeaders = ['Date','Month','Year','Type','Category','Description','Amount (PKR)'];
+  const txnRows = [txnHeaders];
   allEntries.sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(e => {
     const d = new Date(e.date);
     const cat = CATEGORIES.find(c => c.id === e.category);
-    txnRows.push([e.date, fullMonthName(d.getMonth()), d.getFullYear(), e.type, cat?.label || e.category || '—', e.desc || '', e.amount]);
+    txnRows.push([e.date, fullMonthName(d.getMonth()), d.getFullYear(), e.type.toUpperCase(), cat?.label || e.category || '—', e.desc || '', e.amount]);
   });
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(txnRows), 'All Transactions');
-  const years = [...new Set(allEntries.map(e => new Date(e.date).getFullYear()))];
-  const summaryRows = [['Year','Month','Income','Total Expenses','Savings','Net','Car','Bike','Food','Mobile','Shopping','Outing','Medical','Travel Home','Sent Home','Personal','Other']];
+  const txnSheet = XLSX.utils.aoa_to_sheet(txnRows);
+  txnSheet['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 6 }, { wch: 10 }, { wch: 14 }, { wch: 30 }, { wch: 14 }];
+  applyLuxuryStyles(txnSheet, 0, txnRows.length - 1, txnHeaders);
+  XLSX.utils.book_append_sheet(wb, txnSheet, '📋 All Transactions');
+
+  // ── Sheet 2: Monthly Summary ──
+  const summaryHeaders = ['Year','Month','Income','Total Expenses','Savings Set Aside','Net Remaining','Total Savings','Car','Bike','Food','Mobile','Shopping','Outing','Medical','Travel Home','Sent Home','Personal','Other'];
+  const summaryRows = [summaryHeaders];
+  const years = [...new Set(allEntries.map(e => new Date(e.date).getFullYear()))].sort();
   years.forEach(yr => {
     for (let m = 0; m < 12; m++) {
       const me = allEntries.filter(e => { const d = new Date(e.date); return d.getFullYear() === yr && d.getMonth() === m; });
@@ -1617,16 +1677,30 @@ async function exportExcel() {
       const income = me.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
       const spent = me.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
       const saved = me.filter(e => e.type === 'saving').reduce((s, e) => s + e.amount, 0);
+      const netRemaining = income - spent - saved;
+      const totalSavings = saved + netRemaining;
       const catAmt = id => me.filter(e => e.type === 'expense' && e.category === id).reduce((s, e) => s + e.amount, 0);
-      summaryRows.push([yr, fullMonthName(m), income, spent, saved, income-spent-saved, catAmt('car'), catAmt('bike'), catAmt('food'), catAmt('mobile'), catAmt('shopping'), catAmt('outing'), catAmt('medical'), catAmt('travel'), catAmt('home'), catAmt('personal'), catAmt('other')]);
+      summaryRows.push([yr, fullMonthName(m), income, spent, saved, netRemaining, totalSavings, catAmt('car'), catAmt('bike'), catAmt('food'), catAmt('mobile'), catAmt('shopping'), catAmt('outing'), catAmt('medical'), catAmt('travel'), catAmt('home'), catAmt('personal'), catAmt('other')]);
     }
   });
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryRows), 'Monthly Summary');
-  const medRows = [['Date','Type','Reason / Visit','Doctor / Hospital','Notes','Amount (PKR)']];
-  medEntries.sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(e => { medRows.push([e.date, e.type, e.title, e.doctor || '', e.note || '', e.amount]); });
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(medRows), 'Medical Log');
+  const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
+  summarySheet['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 13 }, { wch: 15 }, { wch: 17 }, { wch: 14 }, { wch: 14 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 9 }, { wch: 11 }, { wch: 9 }, { wch: 10 }, { wch: 13 }, { wch: 12 }, { wch: 10 }, { wch: 8 }];
+  applyLuxuryStyles(summarySheet, 0, summaryRows.length - 1, summaryHeaders);
+  XLSX.utils.book_append_sheet(wb, summarySheet, '📊 Monthly Summary');
+
+  // ── Sheet 3: Medical Log ──
+  const medHeaders = ['Date','Type','Reason / Visit','Doctor / Hospital','Notes','Amount (PKR)'];
+  const medRows = [medHeaders];
+  medEntries.sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(e => {
+    medRows.push([e.date, e.type, e.title, e.doctor || '', e.note || '', e.amount]);
+  });
+  const medSheet = XLSX.utils.aoa_to_sheet(medRows);
+  medSheet['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 28 }, { wch: 24 }, { wch: 30 }, { wch: 14 }];
+  applyLuxuryStyles(medSheet, 0, medRows.length - 1, medHeaders);
+  XLSX.utils.book_append_sheet(wb, medSheet, '🏥 Medical Log');
+
   XLSX.writeFile(wb, `FinVault_${activeProfile.name}_${new Date().getFullYear()}.xlsx`);
-  showToast('Excel downloaded ✓');
+  showToast('✨ Luxury Excel downloaded ✓');
 }
 
 async function exportMonthExcel() {
@@ -1634,17 +1708,43 @@ async function exportMonthExcel() {
   const entries = allEntries.filter(e => { const d = new Date(e.date); return d.getFullYear() === currentYear && d.getMonth() === currentMonth; });
   const wb = XLSX.utils.book_new();
   const mn = fullMonthName(currentMonth) + ' ' + currentYear;
-  const rows = [['Date','Type','Category','Description','Amount (PKR)']];
+  const headers = ['Date','Type','Category','Description','Amount (PKR)'];
+  const rows = [headers];
   entries.sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(e => {
     const cat = CATEGORIES.find(c => c.id === e.category);
-    rows.push([e.date, e.type, cat?.label || e.category || '—', e.desc || '', e.amount]);
+    rows.push([e.date, e.type.toUpperCase(), cat?.label || e.category || '—', e.desc || '', e.amount]);
   });
-  rows.push([], ['--- SUMMARY ---'], ['Total Income', entries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0)]);
-  rows.push(['Total Expenses', entries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0)]);
-  rows.push(['Savings Set Aside', entries.filter(e => e.type === 'saving').reduce((s, e) => s + e.amount, 0)]);
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), mn.replace(' ', '_'));
+  const income = entries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
+  const spent = entries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
+  const saved = entries.filter(e => e.type === 'saving').reduce((s, e) => s + e.amount, 0);
+  const netRemaining = income - spent - saved;
+  const totalSavings = saved + netRemaining;
+  rows.push([], ['── SUMMARY ──', '', '', '', '']);
+  rows.push(['Total Income', '', '', '', income]);
+  rows.push(['Total Expenses', '', '', '', spent]);
+  rows.push(['Savings Set Aside', '', '', '', saved]);
+  rows.push(['Net Remaining', '', '', '', netRemaining]);
+  rows.push(['TOTAL SAVINGS (Kept + Remaining)', '', '', '', totalSavings]);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 32 }, { wch: 14 }];
+  applyLuxuryStyles(ws, 0, entries.length, headers);
+
+  // Style summary rows
+  const summaryStartRow = entries.length + 2;
+  for (let sr = summaryStartRow; sr < rows.length; sr++) {
+    const labelCell = XLSX.utils.encode_cell({ r: sr, c: 0 });
+    const amtCell = XLSX.utils.encode_cell({ r: sr, c: 4 });
+    const isTotalRow = rows[sr][0] && rows[sr][0].toString().startsWith('TOTAL');
+    const labelStyle = { font: { bold: isTotalRow, color: { rgb: isTotalRow ? "C9A84C" : "A0A0B0" }, sz: isTotalRow ? 11 : 10, name: "Calibri" }, fill: { fgColor: { rgb: isTotalRow ? "1E1A10" : "12121A" }, patternType: "solid" } };
+    const amtStyle = { font: { bold: isTotalRow, color: { rgb: isTotalRow ? "E8C97A" : "C9A84C" }, sz: isTotalRow ? 11 : 10, name: "Calibri" }, fill: { fgColor: { rgb: isTotalRow ? "1E1A10" : "12121A" }, patternType: "solid" }, alignment: { horizontal: "right" }, numFmt: '#,##0' };
+    if (ws[labelCell]) ws[labelCell].s = labelStyle;
+    if (ws[amtCell]) { ws[amtCell].s = amtStyle; ws[amtCell].z = '#,##0'; }
+  }
+
+  XLSX.utils.book_append_sheet(wb, ws, mn.substring(0, 31));
   XLSX.writeFile(wb, `FinVault_${activeProfile.name}_${mn.replace(' ', '_')}.xlsx`);
-  showToast('Monthly report downloaded ✓');
+  showToast('✨ Monthly report downloaded ✓');
 }
 
 // ===== TOAST =====
